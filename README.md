@@ -1,2 +1,2 @@
 # ConnCheck
-Golang package to check connectivity between one-to-many hosts
+Golang package to check **connectivity** and **latency** between one-to-many hosts
