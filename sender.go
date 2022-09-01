@@ -49,7 +49,7 @@ func (s *Sender) SendPing(ctx context.Context) (time.Duration, error) {
 	defer cancel()
 	s.lastSeq++
 	msgOut := Msg{ClusterID: s.clusterID, Seq: s.lastSeq, MsgType: PING}
-	klog.V(9).Infof("conncheck sender: sending a msg -> %s", msgOut)
+	klog.V(8).Infof("conncheck sender: sending a msg -> %s", msgOut)
 	b, err := MarshalMsg(msgOut)
 	if err != nil {
 		return 0, fmt.Errorf("conncheck sender: failed to marshal msg: %v", err)

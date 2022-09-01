@@ -40,7 +40,7 @@ func (r *Receiver) SendPong(raddr *net.UDPAddr, msg *Msg) error {
 	if err != nil {
 		return fmt.Errorf("conncheck receiver: failed to write to %s: %w", raddr.String(), err)
 	}
-	klog.V(9).Infof("conncheck receiver: sent a msg -> %s", msg)
+	klog.V(8).Infof("conncheck receiver: sent a msg -> %s", msg)
 	return nil
 }
 
@@ -49,7 +49,7 @@ func (r *Receiver) RedirectPong(msg *Msg) error {
 	if ch == nil || !ok {
 		return fmt.Errorf("conncheck receiver: channel closed for %s", msg.ClusterID)
 	}
-	klog.V(9).Infof("conncheck receiver: redirecting a msg -> %s", msg)
+	klog.V(8).Infof("conncheck receiver: redirecting a msg -> %s", msg)
 	ch <- *msg
 	return nil
 }

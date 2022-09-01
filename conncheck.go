@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -15,6 +16,7 @@ type ConnChecker struct {
 	//key is the target cluster ID
 	senders map[string]*Sender
 	conn    *net.UDPConn
+	m       sync.Mutex
 }
 
 func NewConnChecker() (*ConnChecker, error) {
@@ -60,30 +62,34 @@ func (c *ConnChecker) AddAndRunSender(clusterID, ip string, updateCallback func(
 	}
 
 	err = wait.PollImmediateInfiniteWithContext(ctxSender, PeriodicPingInterval, func(ctx context.Context) (done bool, err error) {
-		var connected, update bool
-		latency, err := c.senders[clusterID].SendPing(ctxSender)
-		if err != nil {
-			c.senders[clusterID].consecutiveErrors++
-			if c.senders[clusterID].consecutiveErrors == MaxConsecutiveErrors {
-				c.senders[clusterID].lastLatency = 0
-				c.senders[clusterID].connected = false
-				connected = false
-				update = true
-				klog.Errorf("cluster %s unreachable", clusterID)
-			}
-		} else {
-			c.senders[clusterID].consecutiveErrors = 0
-			c.senders[clusterID].lastLatency = latency
-			c.senders[clusterID].connected = true
-			connected = true
-			update = true
-		}
-		if update {
-			err = updateCallback(connected)
+		go func() {
+			var connected, update bool
+			latency, err := c.senders[clusterID].SendPing(ctxSender)
+			c.m.Lock()
+			defer c.m.Unlock()
 			if err != nil {
-				return false, fmt.Errorf("conncheck sender: failed to update status: %v", err)
+				c.senders[clusterID].consecutiveErrors++
+				if c.senders[clusterID].consecutiveErrors == MaxConsecutiveErrors {
+					c.senders[clusterID].lastLatency = 0
+					c.senders[clusterID].connected = false
+					connected = false
+					update = true
+					klog.Errorf("cluster %s unreachable", clusterID)
+				}
+			} else {
+				c.senders[clusterID].consecutiveErrors = 0
+				c.senders[clusterID].lastLatency = latency
+				c.senders[clusterID].connected = true
+				connected = true
+				update = true
 			}
-		}
+			if update {
+				err = updateCallback(connected)
+				if err != nil {
+					klog.Errorf("conncheck sender: failed to update status: %v", err)
+				}
+			}
+		}()
 		return false, nil
 	})
 	if err != nil {
