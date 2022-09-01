@@ -1,6 +1,6 @@
                                  Apache License
                            Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+                        http://www.apache.org/licenses/https://github.com/cheina97/conncheck/community/license/new?branch=main&filename=LICENSE.md
 
    TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
