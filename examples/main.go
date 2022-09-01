@@ -14,6 +14,7 @@ func updateCallback(connected bool) error {
 }
 
 func main() {
+	target := flag.String("target", "", "target ip")
 	klog.InitFlags(nil)
 	flag.Parse()
 
@@ -33,10 +34,26 @@ func main() {
 	}()
 
 	go func() {
-		if err := cc.AddAndRunSender("ID1", "127.0.0.1", updateCallback); err != nil {
+		if err := cc.RunReceiverDisconnectObserver(); err != nil {
+			klog.Exitf("failed to run receiver disconnect checker: %v", err)
+		}
+	}()
+
+	go func() {
+		if err := cc.AddAndRunSender("ID1", *target, updateCallback); err != nil {
 			klog.Exitf("failed to add and run sender: %v", err)
 		}
 	}()
+
+	/* go func() {
+		wait.Forever(func() {
+			latency, err := cc.GetLatency("ID1")
+			if err != nil {
+				klog.Errorf("failed to get latency: %v", err)
+			}
+			klog.Infof("latency: %v", latency)
+		}, time.Second)
+	}() */
 
 	sw.Wait()
 }

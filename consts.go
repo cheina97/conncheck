@@ -9,12 +9,7 @@ const (
 )
 
 var (
-	// Timeout is the timeout for the conncheck ping in seconds.
-	Timeout = 1 * time.Second
-	// PeriodicPingInterval is the interval for the periodic ping in seconds.
-	PeriodicPingInterval = 1 * time.Second
-	// MaxConsecutiveErrors is the maximum number of consecutive errors.
-	MaxConsecutiveErrors = 5
-	// CleanTime is the time to wait for a msg to be discarded.
-	CleanTime = 5 * time.Second
+	TimeExceededCheckInterval = 5 * time.Second
+	ExceedingTime             = 10 * time.Second
+	PeriodicPingInterval      = 2 * time.Second
 )
