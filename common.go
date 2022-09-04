@@ -3,16 +3,20 @@ package conncheck
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 func (msg Msg) String() string {
-	return fmt.Sprintf("ClusterID: %s, Seq: %d, MsgType: %s", msg.ClusterID, msg.Seq, msg.MsgType)
+	return fmt.Sprintf("ClusterID: %s, MsgType: %s, Timestamp: %d:%d:%d.%d",
+		msg.ClusterID,
+		msg.MsgType,
+		msg.TimeStamp.Hour(), msg.TimeStamp.Minute(), msg.TimeStamp.Second(), msg.TimeStamp.Nanosecond())
 }
 
 type Msg struct {
-	ClusterID string   `json:"clusterID"`
-	Seq       uint64   `json:"seq"`
-	MsgType   MsgTypes `json:"msgType"`
+	ClusterID string    `json:"clusterID"`
+	MsgType   MsgTypes  `json:"msgType"`
+	TimeStamp time.Time `json:"timeStamp"`
 }
 
 type MsgTypes string
@@ -21,6 +25,8 @@ const (
 	PING MsgTypes = "PING"
 	PONG MsgTypes = "PONG"
 )
+
+type UpdateFunc func(connected bool) error
 
 func UnmarshalMsg(bytes []byte) (*Msg, error) {
 	msg := &Msg{}

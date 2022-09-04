@@ -11,7 +11,7 @@ import (
 )
 
 type ConnChecker struct {
-	Receiver *Receiver
+	receiver *Receiver
 	//key is the target cluster ID
 	senders map[string]*Sender
 	conn    *net.UDPConn
@@ -29,7 +29,7 @@ func NewConnChecker() (*ConnChecker, error) {
 	}
 	ctxReceiver, cancelReceiver := context.WithCancel(context.Background())
 	connChecker := ConnChecker{
-		Receiver: NewReceiver(conn, ctxReceiver, cancelReceiver),
+		receiver: NewReceiver(conn, ctxReceiver, cancelReceiver),
 		senders:  make(map[string]*Sender),
 		conn:     conn,
 	}
@@ -37,93 +37,44 @@ func NewConnChecker() (*ConnChecker, error) {
 }
 
 func (c *ConnChecker) RunReceiver() error {
-
-	if err := c.Receiver.Run(c.Receiver.ctx); err != nil {
+	if err := c.receiver.Run(c.receiver.ctx); err != nil {
 		return fmt.Errorf("failed to run receiver: %v", err)
 	}
 	return nil
 }
 
-func (c *ConnChecker) AddAndRunSender(clusterID, ip string, updateCallback func(connected bool) error) error {
+func (c *ConnChecker) RunReceiverDisconnectObserver() error {
+	ctxErrorChecker, cancel := context.WithCancel(c.receiver.ctx)
+	defer cancel()
+	if err := c.receiver.RunDisconnectChecker(ctxErrorChecker); err != nil {
+		return fmt.Errorf("failed to run receiver disconnect checker: %v", err)
+	}
+	return nil
+}
+
+func (c *ConnChecker) AddAndRunSender(clusterID, ip string, updateCallback UpdateFunc) error {
 	if _, ok := c.senders[clusterID]; ok {
 		return fmt.Errorf("sender %s already exists", clusterID)
 	}
 	var err error
-
 	ctxSender, cancelSender := context.WithCancel(context.Background())
-	ch := make(chan Msg)
-	c.senders[clusterID] = NewSender(clusterID, ctxSender, cancelSender, c.conn, ip, ch, updateCallback)
+	c.senders[clusterID] = NewSender(clusterID, ctxSender, cancelSender, c.conn, ip)
 
-	err = c.Receiver.AddRedirectChan(clusterID, ch)
+	err = c.receiver.InitPeer(clusterID, updateCallback)
 	if err != nil {
 		return fmt.Errorf("failed to add redirect chan: %v", err)
 	}
 
-	err = wait.PollImmediateInfiniteWithContext(ctxSender, PeriodicPingInterval, func(ctx context.Context) (done bool, err error) {
-		var connected, update bool
-		latency, err := c.senders[clusterID].SendPing(ctxSender)
+	pingCallback := func(ctx context.Context) (done bool, err error) {
+		err = c.senders[clusterID].SendPing(ctx)
 		if err != nil {
-			c.senders[clusterID].consecutiveErrors++
-			if c.senders[clusterID].consecutiveErrors == MaxConsecutiveErrors {
-				c.senders[clusterID].lastLatency = 0
-				c.senders[clusterID].connected = false
-				connected = false
-				update = true
-				klog.Errorf("cluster %s unreachable", clusterID)
-			}
-		} else {
-			c.senders[clusterID].consecutiveErrors = 0
-			c.senders[clusterID].lastLatency = latency
-			c.senders[clusterID].connected = true
-			connected = true
-			update = true
-		}
-		if update {
-			err = updateCallback(connected)
-			if err != nil {
-				return false, fmt.Errorf("conncheck sender: failed to update status: %v", err)
-			}
+			klog.Warningf("failed to send ping: %v", err)
 		}
 		return false, nil
-	})
-	if err != nil {
-		return fmt.Errorf("failed to run sender: %v", err)
 	}
-	c.clean(clusterID)
+	_ = wait.PollImmediateInfiniteWithContext(ctxSender, PeriodicPingInterval, pingCallback)
 	klog.Infof("conncheck sender %s stopped", clusterID)
 	return nil
-	/* for {
-		select {
-		case <-ctxSender.Done():
-			c.clean(clusterID)
-			klog.Infof("conncheck sender %s stopped", clusterID)
-			return nil
-		default:
-			var status netv1alpha1.ConnectionStatus
-			latency, err := c.senders[clusterID].SendPing(ctxSender)
-			if err != nil {
-				c.senders[clusterID].consecutiveErrors++
-				if c.senders[clusterID].consecutiveErrors == MaxConsecutiveErrors {
-					c.senders[clusterID].lastLatency = 0
-					c.senders[clusterID].connected = false
-					status = netv1alpha1.ConnectionError
-					klog.Errorf("cluster %s unreachable", clusterID)
-				}
-			} else {
-				c.senders[clusterID].consecutiveErrors = 0
-				c.senders[clusterID].lastLatency = latency
-				c.senders[clusterID].connected = true
-				status = netv1alpha1.Connected
-			}
-			if status != "" {
-				err = c.senders[clusterID].updateCallback(status)
-				if err != nil {
-					return fmt.Errorf("conncheck sender: failed to update status: %v", err)
-				}
-			}
-			time.Sleep(PeriodicPingInterval)
-		}
-	} */
 }
 
 func (c *ConnChecker) DelAndStopSender(clusterID string) error {
@@ -131,31 +82,32 @@ func (c *ConnChecker) DelAndStopSender(clusterID string) error {
 		return fmt.Errorf("sender %s does not exist", clusterID)
 	}
 	c.senders[clusterID].cancel()
+	delete(c.senders, clusterID)
+	if _, ok := c.receiver.peers[clusterID]; !ok {
+		return fmt.Errorf("peer %s not found", clusterID)
+	}
+	c.receiver.m.Lock()
+	delete(c.receiver.peers, clusterID)
+	c.receiver.m.Unlock()
 	return nil
 }
 
 func (c *ConnChecker) GetLatency(clusterID string) (time.Duration, error) {
-	if _, ok := c.senders[clusterID]; !ok {
+	c.receiver.m.RLock()
+	defer c.receiver.m.RUnlock()
+	if peer, ok := c.receiver.peers[clusterID]; ok {
+		return peer.latency, nil
+	} else {
 		return 0, fmt.Errorf("sender %s not found", clusterID)
 	}
-	return c.senders[clusterID].lastLatency, nil
 }
 
 func (c *ConnChecker) GetConnected(clusterID string) (bool, error) {
-	if _, ok := c.senders[clusterID]; !ok {
+	c.receiver.m.RLock()
+	defer c.receiver.m.RUnlock()
+	if peer, ok := c.receiver.peers[clusterID]; ok {
+		return peer.connected, nil
+	} else {
 		return false, fmt.Errorf("sender %s not found", clusterID)
 	}
-	return c.senders[clusterID].connected, nil
-}
-
-func (c *ConnChecker) clean(clusterID string) {
-	if _, ok := c.Receiver.redirectChan[clusterID]; !ok {
-		klog.Warning("redirect chan %s not found", clusterID)
-	}
-	if _, ok := c.senders[clusterID]; !ok {
-		klog.Warning("sender %s not found", clusterID)
-	}
-	close(c.Receiver.redirectChan[clusterID])
-	delete(c.Receiver.redirectChan, clusterID)
-	delete(c.senders, clusterID)
 }
