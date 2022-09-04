@@ -1,3 +1,17 @@
+// Copyright 2022 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package conncheck
 
 import (
@@ -11,14 +25,15 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// Receiver is a conncheck receiver.
-
+// Peer represents a peer.
 type Peer struct {
 	connected             bool
 	latency               time.Duration
 	lastReceivedTimestamp time.Time
 	updateCallback        UpdateFunc
 }
+
+// Receiver is a receiver for conncheck messages.
 type Receiver struct {
 	peers  map[string]*Peer
 	m      sync.RWMutex
@@ -29,7 +44,7 @@ type Receiver struct {
 }
 
 // NewReceiver creates a new conncheck receiver.
-func NewReceiver(conn *net.UDPConn, ctx context.Context, cancel context.CancelFunc) *Receiver {
+func NewReceiver(ctx context.Context, conn *net.UDPConn, cancel context.CancelFunc) *Receiver {
 	return &Receiver{
 		peers:  make(map[string]*Peer),
 		buff:   make([]byte, buffSize),
@@ -39,6 +54,7 @@ func NewReceiver(conn *net.UDPConn, ctx context.Context, cancel context.CancelFu
 	}
 }
 
+// SendPong sends a PONG message to the given address.
 func (r *Receiver) SendPong(raddr *net.UDPAddr, msg *Msg) error {
 	msg.MsgType = PONG
 	b, err := MarshalMsg(*msg)
@@ -49,10 +65,11 @@ func (r *Receiver) SendPong(raddr *net.UDPAddr, msg *Msg) error {
 	if err != nil {
 		return fmt.Errorf("failed to write to %s: %w", raddr.String(), err)
 	}
-	klog.V(8).Infof("conncheck sender: sent a msg -> %s", msg)
+	klog.V(8).Infof("conncheck receiver: sent a PONG -> %s", msg)
 	return nil
 }
 
+// ReceivePong receives a PONG message.
 func (r *Receiver) ReceivePong(msg *Msg) error {
 	r.m.Lock()
 	defer r.m.Unlock()
@@ -67,11 +84,11 @@ func (r *Receiver) ReceivePong(msg *Msg) error {
 			return fmt.Errorf("failed to update peer %s: %w", msg.ClusterID, err)
 		}
 		return nil
-	} else {
-		return fmt.Errorf("%s is not in the peersInfo map", msg.ClusterID)
 	}
+	return fmt.Errorf("%s is not in the peersInfo map", msg.ClusterID)
 }
 
+// InitPeer initializes a peer.
 func (r *Receiver) InitPeer(clusterID string, updateCallback UpdateFunc) error {
 	r.m.Lock()
 	defer r.m.Unlock()
@@ -87,9 +104,7 @@ func (r *Receiver) InitPeer(clusterID string, updateCallback UpdateFunc) error {
 	return nil
 }
 
-// Run starts the conncheck receiver inside a network namespace.
-// The Do() function has to be called inside the goroutine because when a go routine start,
-// it chooses a random thread and this thread could run in a netns which is not the gateway netns.
+// Run starts the receiver.
 func (r *Receiver) Run(ctx context.Context) error {
 	klog.V(9).Infof("conncheck receiver: starting")
 	for {
@@ -106,12 +121,14 @@ func (r *Receiver) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("conncheck receiver: failed to unmarshal msg: %w", err)
 			}
-			klog.V(8).Infof("conncheck receiver: received a msg -> %s", msgr)
+			klog.V(9).Infof("conncheck receiver: received a msg -> %s", msgr)
 			switch msgr.MsgType {
 			case PING:
+				klog.V(8).Infof("conncheck receiver: received a PING -> %s", msgr)
 				raddr.Port = port
 				err = r.SendPong(raddr, msgr)
 			case PONG:
+				klog.V(8).Infof("conncheck receiver: received a PONG -> %s", msgr)
 				err = r.ReceivePong(msgr)
 			}
 			if err != nil {
@@ -121,26 +138,28 @@ func (r *Receiver) Run(ctx context.Context) error {
 	}
 }
 
-func (r *Receiver) RunDisconnectChecker(ctx context.Context) error {
+// RunDisconnectObserver starts the disconnect observer.
+func (r *Receiver) RunDisconnectObserver(ctx context.Context) error {
 	klog.V(9).Infof("conncheck receiver disconnect checker: starting")
-	err := wait.PollImmediateInfiniteWithContext(ctx, TimeExceededCheckInterval, func(ctx context.Context) (done bool, err error) {
+	err := wait.PollImmediateInfiniteWithContext(ctx, ConnectionCheckInterval, func(ctx context.Context) (done bool, err error) {
 		r.m.Lock()
 		defer r.m.Unlock()
 		for id, peer := range r.peers {
-			if time.Since(peer.lastReceivedTimestamp) > ExceedingTime {
-				peer.connected = false
-				peer.latency = 0
-				err := peer.updateCallback(false)
-				klog.V(8).Infof("conncheck receiver: %s unreachable", id)
-				if err != nil {
-					klog.Errorf("conncheck receiver: failed to update peer %s: %w", peer.lastReceivedTimestamp, err)
-				}
+			if time.Since(peer.lastReceivedTimestamp) <= ExceedingTime {
+				continue
+			}
+			klog.V(8).Infof("conncheck receiver: %s unreachable", id)
+			peer.connected = false
+			peer.latency = 0
+			err := peer.updateCallback(false)
+			if err != nil {
+				klog.Errorf("conncheck receiver: failed to update peer %s: %w", peer.lastReceivedTimestamp, err)
 			}
 		}
 		return false, nil
 	})
 	if err != nil {
-		return fmt.Errorf("conncheck receiver: failed to run error checker: %v", err)
+		return fmt.Errorf("conncheck receiver: failed to run error checker: %w", err)
 	}
 	return nil
 }
